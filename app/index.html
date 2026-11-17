@@ -3,27 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0e13">
+<meta name="description" content="A fast, static make.fun frontend: the live bounty board, bounty pages, leaderboards and public profiles, straight from make.fun's public API. No sign-in, no build step.">
 <title>make.fun bounties — live board</title>
 <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <header class="top">
-  <div class="wrap top-in">
-    <a class="brand" href="#/">make.fun bounties</a>
-    <nav aria-label="Surfaces">
+  <div class="top-inner">
+    <a class="brand" href="#/"><span class="brand-mark">$&gt;</span> make.fun <span class="brand-sub">terminal board</span></a>
+    <nav class="nav" aria-label="Sections">
       <a href="#/">Board</a>
       <a href="#/bounty/makefun-frontend-01">This bounty</a>
       <a href="#/bounty/makefun-frontend-01/leaderboard">Leaderboard</a>
       <a href="#/u/imtihan-komahate">My profile</a>
     </nav>
-    <p class="status"><span class="dot" aria-hidden="true"></span><span id="status">Live · loading…</span></p>
+    <p class="live"><span class="live-dot" aria-hidden="true"></span><span id="status">Live · connecting…</span></p>
   </div>
 </header>
-<main id="app" class="wrap"></main>
-<noscript><p class="wrap">This frontend needs JavaScript: it renders live data from make.fun's public API in your browser.</p></noscript>
-<footer class="wrap foot">
-  <p>Live data from <a href="https://make.fun">make.fun</a>'s public API · read-only, no sign-in · <a href="#/bounty/makefun-frontend-01">this bounty</a> · <a href="#/u/imtihan-komahate">my profile</a></p>
+<main id="app" class="wrap" aria-live="polite">
+  <p class="loading">Loading live data from make.fun…</p>
+</main>
+<footer class="foot wrap">
+  <p>Read-only client for <a href="https://make.fun">make.fun</a> — every number on this page comes from make.fun's public API, fetched live in your browser. No sign-in, no writes, no tracking.</p>
+  <p><a href="https://make.fun/?ref=ks2r30ft">Enter on make.fun</a> · <a href="https://make.fun/bounty/makefun-frontend-01">makefun-frontend-01</a></p>
 </footer>
+<noscript><p class="wrap noscript">This board needs JavaScript: it renders live bounty data from make.fun's public API in your browser.</p></noscript>
 <script type="module" src="./main.js"></script>
 </body>
 </html>

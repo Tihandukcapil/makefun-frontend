@@ -1,196 +1,307 @@
-// make.fun frontend — the four views. All data comes from make.fun's public
-// API through api.js (read-only GET, no sign-in). Every string from the API is
-// escaped before it reaches the page. Views are called by main.js:
-//   renderBoard(app, board) · enrichBoard(board)
-//   renderBounty(app, bounty) · renderLeaderboard(app, bounty, leaderboard)
-//   renderProfile(app, profile)
-import { date, esc, feeOf, fetchCompetitions, isOpen, money, potOf, timeLeft } from './api.js';
+// make.fun frontend — the four views on live public API data.
+// main.js hands each view its fetched data; this file only renders it.
+// All numbers come from make.fun's API; nothing here is hard-coded.
+import { esc, money, date, timeLeft, potOf, feeOf, isOpen, fetchCompetitions } from './api.js';
 
-/** Under 48h left counts as urgent (red) — the "closing soon" window. */
-const URGENT_MS = 48 * 3600 * 1000;
-const isUrgent = (iso) => new Date(iso).getTime() - Date.now() < URGENT_MS;
+const URGENT_MS = 24 * 3600 * 1000;
+const SOON_MS = 48 * 3600 * 1000;
 
-/** A micro-unit score (956066) as "95.61%". */
-export function pct(micro) { const n = Number(micro); return Number.isFinite(n) ? `${(n / 10000).toFixed(2)}%` : '—'; }
-
-/** Bytes as "914.5 KB". */
-export function kb(bytes) { const n = Number(bytes); return Number.isFinite(n) ? `${(n / 1024).toFixed(1)} KB` : '—'; }
-
-/** An entrant's avatar: their make.fun avatar image over a letter fallback.
-    The letter sits underneath, so a broken image just reveals it. */
-export function avatar(handle, image, small) {
-  const letter = esc((handle || '?').slice(0, 1).toUpperCase());
-  const img = image ? `<img class="avatar${small ? ' sm' : ''}" src="https://make.fun${esc(image)}" alt="" loading="lazy" onerror="this.remove()">` : '';
-  return `<span class="avatar-wrap${small ? ' sm' : ''}"><span class="avatar-letter">${letter}</span>${img}</span>`;
+/** A percent from a micro value: 951972 -> '95.20%'. */
+function pct(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return '—';
+  return `${(n / 10000).toFixed(2)}%`;
 }
 
-/** One board card. */
-export function card(b) {
-  const fee = feeOf(b);
-  const skills = [b.category, ...(b.skills || []).slice(0, 3)].filter(Boolean).join(' · ');
-  return `<article class="card" data-slug="${esc(b.slug)}">
-    <h3><a href="#/bounty/${esc(b.slug)}">${esc(b.title)}</a></h3>
-    <p class="pot-line"><strong class="pot" data-pot="${esc(b.slug)}">${esc(potOf(b))}</strong>
-      <span class="fee" data-fee="${esc(b.slug)}">${fee ? `${esc(fee)} entry fee` : 'Free entry'}</span></p>
-    <p class="meta"><span class="tl${isUrgent(b.deadline) ? ' urgent' : ''}" data-tl="${esc(b.deadline)}">${esc(timeLeft(b.deadline))}</span>
-      · <span data-entries="${esc(b.slug)}">${Number(b.submissionCount || 0).toLocaleString('en-US')} entries</span>
-      <span class="pill open">Open</span></p>
-    <p class="skills">${esc(skills)}</p>
-    <p class="links"><a href="#/bounty/${esc(b.slug)}/leaderboard">Leaderboard →</a><a href="#/bounty/${esc(b.slug)}">Details →</a></p>
-  </article>`;
+/** Bytes as '914.5 KB' / '2.1 MB'. */
+function kb(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return '—';
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  return `${(n / 1024).toFixed(1)} KB`;
 }
 
-/** The board: hero stats, filter + sort, and the card grid. */
+/** A short wallet address: 3kSD…dEEm. */
+function shortAddr(a) {
+  const s = String(a || '');
+  return s.length > 12 ? `${s.slice(0, 4)}…${s.slice(-4)}` : s;
+}
+
+/** Avatar: the letter sits underneath the image; a broken image just reveals it. */
+function avatar(handle, image) {
+  const letter = esc(String(handle || '?').slice(0, 1).toUpperCase());
+  const img = image ? `<img src="${esc(image)}" alt="" loading="lazy" onerror="this.remove()">` : '';
+  return `<span class="avatar-wrap" aria-hidden="true">${letter}${img}</span>`;
+}
+
+/** A deadline label, red when under 24h. */
+function leftLabel(iso) {
+  const ms = new Date(iso).getTime() - Date.now();
+  const label = timeLeft(iso);
+  return ms > 0 && ms < URGENT_MS ? `<span class="urgent">${esc(label)}</span>` : esc(label);
+}
+
+/** Format one leaderboard cell by its column key. */
+function cellValue(col, entry) {
+  const raw = entry.values?.[col.key] ?? entry.display?.[col.key];
+  if (raw === undefined || raw === null) return '—';
+  if (col.key === 'bytes') return kb(raw);
+  if (col.key.startsWith('judge')) return pct(raw);
+  if (col.key === 'valid') return String(raw);
+  const n = Number(raw);
+  return isFinite(n) ? n.toLocaleString('en-US') : esc(String(raw));
+}
+
+/** Format a profile solution's score by its column. */
+function scoreValue(score) {
+  if (!score) return '—';
+  const key = score.column?.key || '';
+  const raw = score.display ?? score.value;
+  if (raw === undefined || raw === null) return '—';
+  if (key.includes('judge') || key.includes('win_rate')) return pct(raw);
+  if (key.includes('pnl') || key.includes('usdc') || key.includes('usd')) {
+    const n = Number(raw);
+    return isFinite(n) ? money(n / 1000000) : esc(String(raw));
+  }
+  if (key === 'bytes') return kb(raw);
+  const n = Number(raw);
+  return isFinite(n) ? n.toLocaleString('en-US') : esc(String(raw));
+}
+
+// ---------------------------------------------------------------- board
+
+/** The live board: hero stats, filter + sort, and a card per open bounty. */
 export function renderBoard(app, data) {
-  const items = (data.items || []).filter(isOpen);
-  const totalPot = items.reduce((s, b) => s + (Number(b.potUsd ?? b.rewardAmount) || 0), 0);
-  const closing = items.filter((b) => isUrgent(b.deadline)).length;
-  app.innerHTML = `<h1>Live bounty board</h1>
-  <p class="lede">Every open bounty on make.fun, with its live pot, entry fee and time left — read straight from the public API, no sign-in.</p>
-  <section class="hero">
-    <div class="stat"><span class="stat-label">Total live pot</span><strong class="stat-big pot" id="hero-pot">${money(totalPot)}</strong><span class="stat-sub">across all open bounties</span></div>
-    <div class="stat"><span class="stat-label">Open bounties</span><strong class="stat-big" id="hero-open">${items.length}</strong><span class="stat-sub">accepting entries now</span></div>
-    <div class="stat"><span class="stat-label">Closing soon</span><strong class="stat-big amber" id="hero-closing">${closing}</strong><span class="stat-sub">under 48 hours left</span></div>
-  </section>
-  <div class="controls">
-    <input id="filter" type="search" placeholder="Filter bounties…" aria-label="Filter bounties">
-    <select id="sort" aria-label="Sort bounties">
-      <option value="soonest">Soonest first</option>
-      <option value="pot">Biggest pot</option>
-      <option value="entries">Most entries</option>
-    </select>
-  </div>
-  <h2 id="grid-title"></h2>
-  <div class="grid" id="grid"></div>`;
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const totalPot = items.reduce((s, b) => s + Number(b.potUsd ?? b.rewardAmount ?? 0), 0);
+  const closingSoon = items.filter((b) => {
+    const ms = new Date(b.deadline).getTime() - Date.now();
+    return ms > 0 && ms < SOON_MS;
+  }).length;
+  const categories = [...new Set(items.map((b) => b.category).filter(Boolean))].sort();
+  app.innerHTML = `
+    <div class="hero">
+      <h1>Live bounties <span class="accent">on make.fun</span></h1>
+      <p class="lede">Every open bounty, its live pot and its deadline — straight from make.fun's public API. Pick one, build the best entry, get paid.</p>
+      <div class="stats">
+        <div class="stat"><b class="green js-total-pot">${money(totalPot)}</b><span>total live pot</span></div>
+        <div class="stat"><b class="js-open-count">${items.length}</b><span>open bounties</span></div>
+        <div class="stat"><b class="${closingSoon ? 'red' : ''} js-soon-count">${closingSoon}</b><span>closing within 48h</span></div>
+      </div>
+      <div class="toolbar">
+        <input type="search" id="q" placeholder="Search bounties…" aria-label="Search bounties">
+        <select id="cat" aria-label="Filter by category">
+          <option value="">All categories</option>
+          ${categories.map((c) => `<option>${esc(c)}</option>`).join('')}
+        </select>
+        <select id="sort" aria-label="Sort bounties">
+          <option value="pot">Biggest pot</option>
+          <option value="deadline">Closing soonest</option>
+          <option value="entries">Most entries</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid" id="grid"></div>
+    <p class="muted small js-count"></p>`;
   const grid = app.querySelector('#grid');
-  const title = app.querySelector('#grid-title');
-  const paint = () => {
-    const q = (app.querySelector('#filter').value || '').toLowerCase();
-    const mode = app.querySelector('#sort').value;
-    let list = items.filter((b) => !q || `${b.title} ${b.category} ${(b.skills || []).join(' ')}`.toLowerCase().includes(q));
-    if (mode === 'pot') list = [...list].sort((a, c) => (Number(c.potUsd ?? c.rewardAmount) || 0) - (Number(a.potUsd ?? a.rewardAmount) || 0));
-    else if (mode === 'entries') list = [...list].sort((a, c) => (Number(c.submissionCount) || 0) - (Number(a.submissionCount) || 0));
-    else list = [...list].sort((a, c) => new Date(a.deadline).getTime() - new Date(c.deadline).getTime());
-    title.textContent = mode === 'soonest' ? `Closing soon · ${list.filter((b) => isUrgent(b.deadline)).length} of ${list.length}` : `All bounties · ${list.length}`;
-    grid.innerHTML = list.length ? list.map(card).join('') : '<p class="muted">No bounties match that filter.</p>';
-  };
-  app.querySelector('#filter').addEventListener('input', paint);
-  app.querySelector('#sort').addEventListener('change', paint);
-  paint();
+  const countEl = app.querySelector('.js-count');
+  const q = app.querySelector('#q');
+  const cat = app.querySelector('#cat');
+  const sort = app.querySelector('#sort');
+
+  function card(b) {
+    const fee = feeOf(b);
+    const entries = b.submissionCount ?? b.submissions?.length ?? 0;
+    return `<article class="card" data-slug="${esc(b.slug)}">
+      <h2><a href="#/bounty/${esc(b.slug)}">${esc(b.title)}</a></h2>
+      <p class="meta">${esc(b.category || '')}${b.sponsor?.name ? ` · by ${esc(b.sponsor.name)}` : ''}</p>
+      ${b.summary ? `<p class="desc">${esc(b.summary)}</p>` : ''}
+      <div class="pot-row">
+        <span class="pot js-pot">${potOf(b)}</span>
+        <span class="fee js-fee ${fee ? '' : 'free'}">${fee ? `fee ${fee}` : 'no entry fee'}</span>
+      </div>
+      <div class="card-foot">
+        <span><b class="js-entries">${Number(entries).toLocaleString('en-US')}</b> entries</span>
+        <span data-tl="${esc(b.deadline)}">${leftLabel(b.deadline)}</span>
+      </div>
+      <div class="chips">${(b.skills || []).slice(0, 4).map((s) => `<span class="chip">${esc(s)}</span>`).join('')}</div>
+      <div class="card-links">
+        <a href="#/bounty/${esc(b.slug)}">Bounty →</a>
+        <a href="#/bounty/${esc(b.slug)}/leaderboard">Leaderboard →</a>
+      </div>
+    </article>`;
+  }
+
+  function draw() {
+    const needle = q.value.trim().toLowerCase();
+    let list = items.filter((b) => {
+      if (cat.value && b.category !== cat.value) return false;
+      if (!needle) return true;
+      return `${b.title} ${b.slug} ${b.category || ''} ${(b.skills || []).join(' ')}`.toLowerCase().includes(needle);
+    });
+    if (sort.value === 'deadline') list.sort((a, b2) => new Date(a.deadline) - new Date(b2.deadline));
+    else if (sort.value === 'entries') list.sort((a, b2) => (b2.submissionCount ?? 0) - (a.submissionCount ?? 0));
+    else list.sort((a, b2) => Number(b2.potUsd ?? b2.rewardAmount ?? 0) - Number(a.potUsd ?? a.rewardAmount ?? 0));
+    grid.innerHTML = list.map(card).join('') || '<p class="muted">No bounties match that filter.</p>';
+    countEl.textContent = `Showing ${list.length} of ${items.length} open bounties · live from make.fun`;
+  }
+  q.addEventListener('input', draw);
+  cat.addEventListener('change', draw);
+  sort.addEventListener('change', draw);
+  draw();
 }
 
-/** Refresh the board's pots, fees and entry counts in place (cached fetch). */
+/** Re-fetch the board and patch each card's pot, fee and entries in place. */
 export async function enrichBoard() {
   try {
-    const fresh = await fetchCompetitions();
-    const bySlug = new Map((fresh.items || []).map((b) => [b.slug, b]));
-    document.querySelectorAll('[data-pot]').forEach((el) => {
-      const b = bySlug.get(el.getAttribute('data-pot'));
-      if (b) el.textContent = potOf(b);
-    });
-    document.querySelectorAll('[data-fee]').forEach((el) => {
-      const b = bySlug.get(el.getAttribute('data-fee'));
-      if (b) { const f = feeOf(b); el.textContent = f ? `${f} entry fee` : 'Free entry'; }
-    });
-    document.querySelectorAll('[data-entries]').forEach((el) => {
-      const b = bySlug.get(el.getAttribute('data-entries'));
-      if (b) el.textContent = `${Number(b.submissionCount || 0).toLocaleString('en-US')} entries`;
-    });
-  } catch (e) { /* the board already shows the first fetch; a refresh failure is silent */ }
+    const data = await fetchCompetitions();
+    const items = Array.isArray(data?.items) ? data.items : [];
+    const totalPot = items.reduce((s, b) => s + Number(b.potUsd ?? b.rewardAmount ?? 0), 0);
+    const totalEl = document.querySelector('.js-total-pot');
+    if (totalEl) totalEl.textContent = money(totalPot);
+    const openEl = document.querySelector('.js-open-count');
+    if (openEl) openEl.textContent = String(items.length);
+    for (const b of items) {
+      const cardEl = document.querySelector(`.card[data-slug="${CSS.escape(b.slug)}"]`);
+      if (!cardEl) continue;
+      const potEl = cardEl.querySelector('.js-pot');
+      if (potEl) potEl.textContent = potOf(b);
+      const feeEl = cardEl.querySelector('.js-fee');
+      const fee = feeOf(b);
+      if (feeEl) {
+        feeEl.textContent = fee ? `fee ${fee}` : 'no entry fee';
+        feeEl.classList.toggle('free', !fee);
+      }
+      const entriesEl = cardEl.querySelector('.js-entries');
+      if (entriesEl) entriesEl.textContent = Number(b.submissionCount ?? 0).toLocaleString('en-US');
+    }
+  } catch (e) {
+    /* The first render already shows live data; a failed refresh leaves it as is. */
+  }
 }
 
-/** One bounty: hero, stat boxes, skills, description, live rewards, entries. */
+// ---------------------------------------------------------------- bounty
+
+/** One bounty: hero, stat boxes, skills, description, live rewards, latest entries. */
 export function renderBounty(app, b) {
-  const fee = feeOf(b);
-  const rewards = (b.rewardsNow || []).slice().sort((a, c) => a.place - c.place);
-  const entries = (b.submissions || []).slice(0, 10);
-  const opened = b.publishedAt ? date(b.publishedAt) : '—';
-  app.innerHTML = `<p class="crumbs"><a href="#/">← All bounties</a> · <a href="#/bounty/${esc(b.slug)}/leaderboard">Leaderboard →</a></p>
-  <section class="hero-card">
-    <p class="pills"><span class="pill open">Open — takes entries</span>${isUrgent(b.deadline) ? '<span class="pill amber">Closing soon</span>' : ''}</p>
-    <h1>${esc(b.title)}</h1>
-    <p class="sub muted">${esc(b.category || '')} · by ${esc(b.sponsor?.name || 'make.fun')}</p>
-    <p class="big-pot">${esc(potOf(b))}</p>
-    <p class="pot-sub">Live pot right now${fee ? ` · ${esc(fee)} entry fee` : ' · free entry'} · <span class="tl${isUrgent(b.deadline) ? ' urgent' : ''}" data-tl="${esc(b.deadline)}">${esc(timeLeft(b.deadline))}</span></p>
-  </section>
-  <section class="stat4">
-    <div class="stat"><span class="stat-label">Reward</span><strong class="stat-big">${money(b.rewardAmount)}${Number(b.entryFeesUsd) > 0 ? ` + ${money(b.entryFeesUsd)} fees` : ''}</strong><span class="stat-sub">prize + entry fees paid in</span></div>
-    <div class="stat"><span class="stat-label">Deadline</span><strong class="stat-big">${esc(date(b.deadline))}</strong><span class="stat-sub">entries close then</span></div>
-    <div class="stat"><span class="stat-label">Entries</span><strong class="stat-big">${Number(b.submissionCount || 0).toLocaleString('en-US')}</strong><span class="stat-sub">submissions so far</span></div>
-    <div class="stat"><span class="stat-label">Opened</span><strong class="stat-big">${esc(opened)}</strong><span class="stat-sub">published</span></div>
-  </section>
-  <p class="chips">${(b.skills || []).map((s) => `<span class="chip">${esc(s)}</span>`).join('')}</p>
-  <p class="desc">${esc((b.description || '').slice(0, 700))}</p>
-  <h2>Rewards · live pot ${esc(potOf(b))}</h2>
-  <table><thead><tr><th>Place</th><th class="num">Pays now</th><th class="num">Split</th></tr></thead><tbody>
-  ${rewards.map((r) => `<tr${r.place === 1 ? ' class="first"' : ''}><td><span class="rank-badge${r.place === 1 ? ' gold' : ''}">${r.place}</span></td><td class="num"><strong>${money(r.amountUsd)}</strong></td><td class="num">${money(r.baseUsd)} prize + ${money(r.feeShareUsd)} fees</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No reward split published yet.</td></tr>'}
-  </tbody></table>
-  <h2>Latest entries · ${Number(b.submissionCount || 0).toLocaleString('en-US')}</h2>
-  <ul class="entries-list">${entries.map((s) => `<li><span class="who"><a href="#/u/${esc(s.hunter)}">${esc(s.hunter)}</a></span><span class="what"><a href="#/bounty/${esc(b.slug)}/leaderboard">${esc(s.title || s.id)}</a></span><span class="score">${esc(s.status || '')}</span></li>`).join('') || '<li class="muted">No entries yet.</li>'}</ul>`;
-}
-
-/** A leaderboard: podium for the top 3, then the ranked table. */
-export function renderLeaderboard(app, b, lb) {
-  const entries = lb.entries || [];
-  const cols = (lb.columns || []).filter((c) => !c.hidden);
-  const key = lb.rank_key || 'judge';
-  const cell = (e, c) => {
-    const v = e.display?.[c.key];
-    if (v == null) return '—';
-    if (c.key === 'bytes') return kb(v);
-    if (c.key.startsWith('judge')) return pct(v);
-    return esc(String(v));
+  const rewards = Array.isArray(b.rewardsNow) ? b.rewardsNow : [];
+  const entries = Array.isArray(b.submissions) ? b.submissions.slice(0, 10) : [];
+  const base = Number(b.rewardAmount ?? 0);
+  const fees = Number(b.entryFeesUsd ?? 0);
+  const rankKey = b.leaderboard?.rankKey || 'judge';
+  const scoreOf = (s) => {
+    if (s.score === undefined || s.score === null) return '—';
+    if (String(rankKey).includes('judge')) return pct(s.score);
+    const n = Number(s.score);
+    return isFinite(n) ? n.toLocaleString('en-US') : esc(String(s.score));
   };
-  const podium = entries.slice(0, 3).map((e, i) => `<div class="podium-card rank${i + 1}">
-    <p class="place-label">#${i + 1} place</p>${avatar(e.handle, e.image)}
-    <p><a class="handle" href="#/u/${esc(e.handle)}">${esc(e.handle)}</a></p>
-    <p class="score">${pct(e.display?.[key])}</p>
-    <p class="entry-title">${esc(e.title || '')}</p>
-  </div>`).join('');
-  const rows = entries.slice(0, 100).map((e) => {
-    const badge = e.rank === 1 ? 'gold' : e.rank === 2 ? 'silver' : e.rank === 3 ? 'bronze' : '';
-    return `<tr${e.rank === 1 ? ' class="top1"' : ''}><td><span class="rank-badge ${badge}">${e.rank}</span></td>
-    <td class="entry-cell">${avatar(e.handle, e.image, true)}<a href="#/u/${esc(e.handle)}">${esc(e.handle)}</a><span class="sub">${esc(e.title || '')}</span></td>
-    ${cols.map((c) => `<td class="num">${cell(e, c)}</td>`).join('')}</tr>`;
-  }).join('');
-  app.innerHTML = `<p class="crumbs"><a href="#/bounty/${esc(b.slug)}">← ${esc(b.title)}</a></p>
-  <h1>${esc(b.title)}</h1>
-  <p class="lede">${entries.length.toLocaleString('en-US')} entries · live pot <strong class="pot">${esc(potOf(b))}</strong> · ${Number(b.submissionCount || 0).toLocaleString('en-US')} submissions</p>
-  <section class="podium">${podium}</section>
-  <table class="lb"><thead><tr><th>#</th><th>Entry</th>${cols.map((c) => `<th class="num">${esc(c.title)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>
-  ${entries.length > 100 ? `<p class="small">Showing the top 100 of ${entries.length.toLocaleString('en-US')} entries.</p>` : ''}`;
+  app.innerHTML = `
+    <div class="hero">
+      <p class="meta muted small"><a href="#/">Board</a> · ${esc(b.category || '')}${b.sponsor?.name ? ` · by ${esc(b.sponsor.name)}` : ''}</p>
+      <h1>${esc(b.title)}</h1>
+      <p class="lede">${esc(b.summary || b.description || '')}</p>
+      <div class="stats">
+        <div class="stat"><b class="green">${potOf(b)}</b><span>live pot</span></div>
+        <div class="stat"><b>${money(base)}</b><span>base reward</span></div>
+        <div class="stat"><b class="amber">${money(fees)}</b><span>entry fees in pot</span></div>
+        <div class="stat"><b>${Number(b.entryFeePayers ?? 0).toLocaleString('en-US')}</b><span>fee payers</span></div>
+        <div class="stat"><b>${Number(b.submissionCount ?? 0).toLocaleString('en-US')}</b><span>entries</span></div>
+        <div class="stat"><b class="${new Date(b.deadline).getTime() - Date.now() < URGENT_MS ? 'red' : ''}">${esc(date(b.deadline))}</b><span data-tl="${esc(b.deadline)}">${leftLabel(b.deadline)}</span></div>
+      </div>
+      <div class="chips">${(b.skills || []).map((s) => `<span class="chip">${esc(s)}</span>`).join('')}</div>
+    </div>
+    <section>
+      <h2>About this bounty</h2>
+      <p class="muted">${esc(b.description || '')}</p>
+      <p><a href="#/bounty/${esc(b.slug)}/leaderboard">See the leaderboard →</a></p>
+    </section>
+    ${rewards.length ? `<section>
+      <h2>Rewards right now</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Place</th><th class="num">Base</th><th class="num">Fee share</th><th class="num">Total now</th></tr></thead>
+        <tbody>${rewards.map((r) => `<tr><td>#${esc(r.place)}</td><td class="num">${money(r.baseUsd)}</td><td class="num">${money(r.feeShareUsd)}</td><td class="num"><b>${money(r.amountUsd)}</b></td></tr>`).join('')}</tbody>
+      </table></div>
+    </section>` : ''}
+    ${entries.length ? `<section>
+      <h2>Latest entries</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Entry</th><th>Hunter</th><th>Status</th><th class="num">Score</th></tr></thead>
+        <tbody>${entries.map((s) => `<tr>
+          <td class="entry-cell">${esc(s.title || s.id || '')}</td>
+          <td>${avatar(s.hunter, null)}${esc(s.hunter || '')}</td>
+          <td>${esc(s.status || '')}</td>
+          <td class="num">${scoreOf(s)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </section>` : ''}`;
 }
 
-/** A public profile: record, wallet, and the entrant's entries. */
+// ---------------------------------------------------------------- leaderboard
+
+/** A bounty's leaderboard: podium for the top 3, then the ranked table. */
+export function renderLeaderboard(app, b, lb) {
+  const columns = (lb.columns || []).filter((c) => !c.hidden);
+  const entries = (lb.entries || []).filter((e) => e.ranked !== false).slice(0, 100);
+  const top = entries.slice(0, 3);
+  const rankKey = lb.rank_key || 'judge';
+  app.innerHTML = `
+    <div class="hero">
+      <p class="meta muted small"><a href="#/">Board</a> · <a href="#/bounty/${esc(b.slug)}">${esc(b.title)}</a></p>
+      <h1>${esc(b.title)} <span class="accent">leaderboard</span></h1>
+      <p class="lede">${entries.length} ranked entries · ranked by ${esc(rankKey)} · live from make.fun</p>
+    </div>
+    ${top.length ? `<div class="podium">${top.map((e, i) => `
+      <div class="place ${i === 0 ? 'first' : i === 1 ? 'second' : 'third'}">
+        <span class="rank-badge rank-${i + 1}">${e.rank}</span>
+        <div class="handle">${avatar(e.handle, e.image)}<a href="#/u/${esc(e.handle)}">${esc(e.handle)}</a></div>
+        <div class="score">${cellValue({ key: rankKey }, e)}</div>
+        <div class="sub">${esc((e.title || '').slice(0, 80))}</div>
+      </div>`).join('')}</div>` : ''}
+    <section class="lb">
+      <div class="table-wrap"><table>
+        <thead><tr><th class="num">#</th><th>Entry</th>${columns.map((c) => `<th class="num">${esc(c.title)}</th>`).join('')}</tr></thead>
+        <tbody>${entries.map((e) => `<tr>
+          <td class="num"><b>${e.rank}</b></td>
+          <td class="entry-cell">${avatar(e.handle, e.image)}<a href="#/u/${esc(e.handle)}">${esc(e.handle)}</a><br><span class="muted small">${esc((e.title || '').slice(0, 90))}</span></td>
+          ${columns.map((c) => `<td class="num">${cellValue(c, e)}</td>`).join('')}
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <p class="muted small">Showing ${entries.length} of ${(lb.entries || []).length} entries · ${(lb.entries || []).length > 100 ? 'top 100 only' : 'all entries'}</p>
+    </section>`;
+}
+
+// ---------------------------------------------------------------- profile
+
+/** A public profile: record, wallet, and every entered solution. */
 export function renderProfile(app, p) {
   const r = p.record || {};
-  const sols = p.solutions || [];
-  const score = (s) => {
-    if (!s.score) return '—';
-    const v = s.score.value ?? s.score.display;
-    const k = s.score.column?.key || '';
-    if (v == null) return '—';
-    if (k.startsWith('judge')) return pct(v);
-    if (k === 'net_pnl') return money(Number(v) / 1e6);
-    return esc(String(s.score.display ?? v));
-  };
-  app.innerHTML = `<h1>${esc(p.display_name || p.handle)}</h1>
-  <p class="lede">@${esc(p.handle)}${p.joined_at ? ` · member since ${esc(date(p.joined_at))}` : ''}</p>
-  ${p.wallet?.address ? `<p class="wallet-line">Wallet <a href="${esc(p.wallet.explorer_url || `https://solscan.io/account/${p.wallet.address}`)}">${esc(p.wallet.address)}</a></p>` : ''}
-  <section class="record">
-    <div class="stat"><span class="stat-label">Entered</span><strong class="stat-big">${Number(r.competitions_entered || 0)}</strong><span class="stat-sub">bounties</span></div>
-    <div class="stat"><span class="stat-label">Placed</span><strong class="stat-big">${Number(r.competitions_placed || 0)}</strong><span class="stat-sub">top finishes</span></div>
-    <div class="stat"><span class="stat-label">Won</span><strong class="stat-big">${Number(r.competitions_won || 0)}</strong><span class="stat-sub">bounties</span></div>
-    <div class="stat"><span class="stat-label">Best placement</span><strong class="stat-big">${r.best_placement ? `#${Number(r.best_placement).toLocaleString('en-US')}` : '—'}</strong><span class="stat-sub">across all entries</span></div>
-    <div class="stat"><span class="stat-label">Prize money</span><strong class="stat-big pot">${money(r.prize_usd)}</strong><span class="stat-sub">won so far</span></div>
-  </section>
-  <h2>Entries · ${sols.length}</h2>
-  <table><thead><tr><th>Competition</th><th>Entry</th><th>Placed</th><th class="num">Prize</th><th class="num">Score</th><th>Entered</th></tr></thead><tbody>
-  ${sols.map((s) => `<tr><td><a href="#/bounty/${esc(s.competition?.slug || '')}">${esc(s.competition?.title || s.competition?.slug || '')}</a></td>
-    <td>${esc(s.title || s.submission_id || '')}</td>
-    <td>${s.placement ? `#${s.placement}` : '—'}</td>
-    <td class="num">${s.prize_usd ? money(s.prize_usd) : '—'}</td>
-    <td class="num">${score(s)}</td>
-    <td>${s.entered_at ? esc(date(s.entered_at)) : '—'}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No entries yet.</td></tr>'}
-  </tbody></table>`;
+  const solutions = Array.isArray(p.solutions) ? p.solutions : [];
+  const wallet = p.wallet?.address || '';
+  app.innerHTML = `
+    <div class="hero">
+      <h1>${avatar(p.handle, p.image || p.avatar)}${esc(p.display_name || p.handle)}</h1>
+      <p class="lede">${esc(p.bio || '')}${p.joined_at ? ` · on make.fun since ${esc(date(p.joined_at))}` : ''}</p>
+      <div class="stats">
+        <div class="stat"><b>${Number(r.competitions_entered ?? 0)}</b><span>entered</span></div>
+        <div class="stat"><b>${Number(r.competitions_placed ?? 0)}</b><span>placed</span></div>
+        <div class="stat"><b>${Number(r.competitions_won ?? 0)}</b><span>won</span></div>
+        <div class="stat"><b>${r.best_placement ? `#${Number(r.best_placement).toLocaleString('en-US')}` : '—'}</b><span>best placement</span></div>
+        <div class="stat"><b class="green">${money(r.prize_usd ?? 0)}</b><span>prize money</span></div>
+      </div>
+      ${wallet ? `<p class="muted">Wallet ${p.wallet?.explorer_url ? `<a href="${esc(p.wallet.explorer_url)}">${esc(shortAddr(wallet))}</a>` : esc(shortAddr(wallet))}</p>` : ''}
+    </div>
+    <section>
+      <h2>Entries (${solutions.length})</h2>
+      ${solutions.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Competition</th><th>Entry</th><th class="num">Score</th><th>Place</th><th class="num">Prize</th><th>Entered</th></tr></thead>
+        <tbody>${solutions.map((s) => `<tr>
+          <td><a href="#/bounty/${esc(s.competition?.slug || '')}">${esc(s.competition?.title || s.competition?.slug || '')}</a></td>
+          <td class="entry-cell">${esc(s.title || '')}</td>
+          <td class="num">${scoreValue(s.score)}${s.score?.column?.title ? `<br><span class="muted small">${esc(s.score.column.title)}</span>` : ''}</td>
+          <td>${s.placement ? `#${esc(s.placement)}` : '—'}</td>
+          <td class="num">${s.prize_usd ? money(s.prize_usd) : '—'}</td>
+          <td class="num">${s.entered_at ? esc(date(s.entered_at)) : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : '<p class="muted">No entries yet.</p>'}
+    </section>`;
 }
