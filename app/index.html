@@ -4,19 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>make.fun bounties — live board</title>
-<meta name="description" content="Fast, tiny frontend for make.fun: live board, bounty pages, leaderboards, profiles.">
-<link rel="stylesheet" href="style.css">
-<script type="module" src="main.js"></script>
+<link rel="stylesheet" href="./style.css">
 </head>
 <body>
-<header>
-<div class="head-in">
-<a class="brand" href="#/">make<b>.</b>fun bounties</a>
-<nav><a href="#/">Board</a><a href="#/bounty/makefun-frontend-01">This bounty</a><a href="#/bounty/makefun-frontend-01/leaderboard">Leaderboard</a><a href="#/u/imtihan-komahate">My profile</a></nav>
-<p id="status">Live · cached · ~4 KB first load</p>
-</div>
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="#/">make.fun bounties</a>
+    <nav aria-label="Surfaces">
+      <a href="#/">Board</a>
+      <a href="#/bounty/makefun-frontend-01">This bounty</a>
+      <a href="#/bounty/makefun-frontend-01/leaderboard">Leaderboard</a>
+      <a href="#/u/imtihan-komahate">My profile</a>
+    </nav>
+    <p class="status"><span class="dot" aria-hidden="true"></span><span id="status">Live · loading…</span></p>
+  </div>
 </header>
-<main id="app"><p class="loading">Loading live data from make.fun…</p></main>
-<footer><p>Read-only client for <a href="https://make.fun/?ref=ks2r30ft">make.fun</a> · live data, cached + revalidated · no sign-in, no tracking.</p></footer>
+<main id="app" class="wrap"></main>
+<noscript><p class="wrap">This frontend needs JavaScript: it renders live data from make.fun's public API in your browser.</p></noscript>
+<footer class="wrap foot">
+  <p>Live data from <a href="https://make.fun">make.fun</a>'s public API · read-only, no sign-in · <a href="#/bounty/makefun-frontend-01">this bounty</a> · <a href="#/u/imtihan-komahate">my profile</a></p>
+</footer>
+<script type="module" src="./main.js"></script>
 </body>
 </html>
