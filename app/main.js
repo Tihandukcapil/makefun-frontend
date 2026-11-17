@@ -8,7 +8,7 @@ const app=document.getElementById('app');
 const statusEl=document.getElementById('status');
 
 /** Live header line: how many API requests this session made, and freshness. */
-export function updateStatus(note){if(statusEl)statusEl.textContent=`Live board · cached · ${requestCount()} requests · ${note||'updated just now'}`;}
+export function updateStatus(note){if(statusEl)statusEl.textContent=`Live · ${requestCount()} requests · ${note||'updated just now'}`;}
 
 /** Re-render every time-left label in place, without rebuilding the page. */
 export function tickTimeLeft(){document.querySelectorAll('[data-tl]').forEach(el=>{el.textContent=timeLeft(el.getAttribute('data-tl'));});}
